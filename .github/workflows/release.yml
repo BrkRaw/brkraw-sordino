@@ -14,89 +14,31 @@ on:
 permissions:
   contents: write
   discussions: write
-  actions: read
 
 jobs:
   release:
     if: ${{ github.repository == 'BrkRaw/brkraw-sordino' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check release metadata artifact
-        if: ${{ github.event_name == 'workflow_run' }}
-        id: artifact
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from urllib import request
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          run_id = os.environ["RUN_ID"]
-          token = os.environ.get("GITHUB_TOKEN")
-          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/artifacts"
-
-          req = request.Request(url)
-          req.add_header("Authorization", f"Bearer {token}")
-          req.add_header("Accept", "application/vnd.github+json")
-          with request.urlopen(req) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-
-          found = any(a.get("name") == "release-metadata" for a in payload.get("artifacts", []))
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-            handle.write(f"found={'true' if found else 'false'}\n")
-          PY
-      - name: Download release metadata
-        if: ${{ github.event_name == 'workflow_run' && steps.artifact.outputs.found == 'true' }}
-        uses: actions/download-artifact@v4
-        continue-on-error: true
+      - uses: actions/checkout@v4
         with:
-          name: release-metadata
-          run-id: ${{ github.event.workflow_run.id }}
-          path: .
-      - name: Check release metadata
-        if: ${{ github.event_name == 'workflow_run' }}
-        id: metadata
-        run: |
-          if [ -f release_metadata.json ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Skip release (no metadata)
-        if: ${{ github.event_name == 'workflow_run' && steps.metadata.outputs.found != 'true' }}
-        run: |
-          echo "release_metadata.json not found; skipping release."
-          exit 0
+          fetch-depth: 0
       - name: Resolve tag
         id: tag
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.metadata.outputs.found == 'true' }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "created=true" >> "$GITHUB_OUTPUT"
+            tag="${{ inputs.tag }}"
+            created="true"
           else
-            python3 - <<'PY'
-            import os
-            import json
-            from pathlib import Path
-
-            path = Path("release_metadata.json")
-            if not path.exists():
-                raise SystemExit("release_metadata.json not found")
-            data = json.loads(path.read_text(encoding="utf-8"))
-            tag = data.get("tag")
-            created = data.get("created", "false")
-            if not tag:
-                raise SystemExit("Tag not found in release metadata")
-            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-                handle.write(f"value={tag}\n")
-                handle.write(f"created={created}\n")
-            PY
+            tag="$(git tag --points-at ${{ github.event.workflow_run.head_sha }} | head -n 1)"
+            if [ -n "$tag" ]; then
+              created="true"
+            else
+              created="false"
+            fi
           fi
+          echo "value=$tag" >> "$GITHUB_OUTPUT"
+          echo "created=$created" >> "$GITHUB_OUTPUT"
       - name: Ensure release needed
         if: ${{ steps.tag.outputs.created != 'true' }}
         run: |

@@ -1,6 +1,8 @@
 name: Publish Package
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       target:
@@ -12,58 +14,18 @@ on:
         description: "Tag to publish (optional, e.g. v1.2.3)"
         required: false
         type: string
-  workflow_run:
-    workflows: ["Create Release"]
-    types: [completed]
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   build:
-    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') }}
+    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' }}
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
-      - name: Check release metadata artifact
-        if: ${{ github.event_name == 'workflow_run' }}
-        id: artifact
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          RUN_ID: ${{ github.event.workflow_run.id }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          from urllib import request
-
-          repo = os.environ["GITHUB_REPOSITORY"]
-          run_id = os.environ["RUN_ID"]
-          token = os.environ.get("GITHUB_TOKEN")
-          url = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/artifacts"
-
-          req = request.Request(url)
-          req.add_header("Authorization", f"Bearer {token}")
-          req.add_header("Accept", "application/vnd.github+json")
-          with request.urlopen(req) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-
-          found = any(a.get("name") == "release-metadata" for a in payload.get("artifacts", []))
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
-            handle.write(f"found={'true' if found else 'false'}\n")
-          PY
-      - name: Download release metadata
-        if: ${{ github.event_name == 'workflow_run' && steps.artifact.outputs.found == 'true' }}
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: release-metadata
-          run-id: ${{ github.event.workflow_run.id }}
-          path: .
       - name: Require tag for manual publish
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}
         run: |
@@ -71,10 +33,23 @@ jobs:
           exit 1
       - name: Resolve tag
         id: meta
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          INPUT_TAG: ${{ inputs.tag }}
-        run: python scripts/resolve_publish_tag.py
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+          if [ -z "$tag" ]; then
+            echo "Tag not resolved."
+            exit 1
+          fi
+          if echo "$tag" | grep -Eq '(a|b|rc)[0-9]*$'; then
+            prerelease="true"
+          else
+            prerelease="false"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
       - name: Ensure publish needed
         if: ${{ steps.meta.outputs.prerelease == 'true' }}
         run: |
@@ -112,7 +87,7 @@ jobs:
           path: dist/
 
   publish:
-    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && needs.build.outputs.prerelease != 'true' && needs.build.outputs.tag != '' }}
+    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' && needs.build.outputs.prerelease != 'true' && needs.build.outputs.tag != '' }}
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
