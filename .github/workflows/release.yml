@@ -23,12 +23,28 @@ jobs:
       - name: Download release metadata
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: release-metadata
           run-id: ${{ github.event.workflow_run.id }}
           path: .
+      - name: Check release metadata
+        if: ${{ github.event_name == 'workflow_run' }}
+        id: metadata
+        run: |
+          if [ -f release_metadata.json ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Skip release (no metadata)
+        if: ${{ github.event_name == 'workflow_run' && steps.metadata.outputs.found != 'true' }}
+        run: |
+          echo "release_metadata.json not found; skipping release."
+          exit 0
       - name: Resolve tag
         id: tag
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.metadata.outputs.found == 'true' }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"

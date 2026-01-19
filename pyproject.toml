@@ -19,6 +19,11 @@ dependencies = [
   "mri-nufft[finufft]"
 ]
 
+[project.optional-dependencies]
+dev = [
+  "tomli"
+]
+
 [project.entry-points."brkraw.converter_hook"]
 sordino = "brkraw_sordino.hook:HOOK"
 
