@@ -30,6 +30,7 @@ jobs:
       - name: Download release metadata
         if: ${{ github.event_name == 'workflow_run' }}
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: release-metadata
           run-id: ${{ github.event.workflow_run.id }}
@@ -44,6 +45,11 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
             tag="${{ inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "workflow_run" ] && [ ! -f release_metadata.json ]; then
+            echo "Release metadata not found; skipping publish."
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            exit 0
           else
             tag="$(python3 - <<'PY'\nimport json\nfrom pathlib import Path\npath = Path(\"release_metadata.json\")\nif not path.exists():\n    raise SystemExit(\"release_metadata.json not found\")\ndata = json.loads(path.read_text(encoding=\"utf-8\"))\nprint(data.get(\"tag\", \"\"))\nPY\n)"
           fi
@@ -95,7 +101,7 @@ jobs:
           path: dist/
 
   publish:
-    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && needs.build.outputs.prerelease != 'true' }}
+    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && needs.build.outputs.prerelease != 'true' && needs.build.outputs.tag != '' }}
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
