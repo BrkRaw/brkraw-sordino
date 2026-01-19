@@ -1,1 +1,28 @@
-Release notes will be added here.
+# Release v0.1.1
+
+Date: 2026-01-19
+Changes
+
+- chore: prepare release v0.1.1 (06a8195)
+- docs: update supported hook keys (cebe1fe)
+- chore: adapt release PR script (115c7f2)
+- gitignore (d10ec67)
+- automate pr (7f3ce49)
+- Add release prep PR task (728f03e)
+- Derive tags from git/release and drop artifact chaining (fc45a20)
+- Move publish tag resolution into script (0bd712a)
+- Use helper script to read release tag (38abed0)
+- Fix publish workflow python -c quoting (685f8ea)
+- Fix publish workflow tag extraction block (c019cd8)
+- Fix publish workflow tag parsing (7299a1d)
+- Fix publish workflow YAML indentation (b08e3f4)
+- Guard artifact download and fix publish tag parsing (2cee357)
+- Skip publish when release metadata is missing (299f761)
+- Skip release when tag is missing or empty (1171d92)
+- Skip release when tag is missing (27b80f2)
+- Handle missing release metadata and add tomli dev extra (4035b3f)
+- Add release and publish workflows (11e6a90)
+- Patch orientation bug (a2e78c9)
+- refactor: update sordino flow, add bep assets (c1b427c)
+- Add notebooks and orientation test assets (b0679ec)
+- Initial brkraw-sordino hook package (601c28d)
