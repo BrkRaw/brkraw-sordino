@@ -71,28 +71,10 @@ jobs:
           exit 1
       - name: Resolve tag
         id: meta
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
-          elif [ "${{ github.event_name }}" = "workflow_run" ] && [ ! -f release_metadata.json ]; then
-            echo "Release metadata not found; skipping publish."
-            echo "tag=" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          else
-            tag="$(python3 scripts/read_release_tag.py)"
-          fi
-          if [ -z "$tag" ]; then
-            echo "Tag not resolved."
-            exit 1
-          fi
-          if echo "$tag" | grep -Eq '(a|b|rc)[0-9]*$'; then
-            prerelease="true"
-          else
-            prerelease="false"
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: python scripts/resolve_publish_tag.py
       - name: Ensure publish needed
         if: ${{ steps.meta.outputs.prerelease == 'true' }}
         run: |
