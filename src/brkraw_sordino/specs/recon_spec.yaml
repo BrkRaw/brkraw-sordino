@@ -23,16 +23,6 @@ GradientOrientation:
       key: PVM_SPackArrGradOrient
   transform: squeeze_ndarray
 
-SubjectPosition:
-  sources:
-    - file: visu_pars
-      key: VisuSubjectPosition
-
-SubjectType:
-  sources:
-    - file: visu_pars
-      key: VisuSubjectType
-
 EncNReceivers:
   sources:
     - file: method
