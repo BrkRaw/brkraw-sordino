@@ -73,6 +73,13 @@ jobs:
         run: |
           echo "Release already exists or tag not created; skipping."
           exit 0
+      - name: Ensure tag exists
+        run: |
+          tag="${{ steps.tag.outputs.value }}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} not found; skipping release."
+            exit 0
+          fi
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.tag.outputs.value }}
