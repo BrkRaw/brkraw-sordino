@@ -1,0 +1,147 @@
+name: Release On Merge
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  tag_release:
+    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check release label
+        id: release
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from urllib import request
+
+          token = os.environ.get("GITHUB_TOKEN")
+          repo = os.environ["GITHUB_REPOSITORY"]
+          sha = os.environ["GITHUB_SHA"]
+          owner, name = repo.split("/")
+
+          query = {
+              "query": """
+              query($owner: String!, $name: String!, $cursor: String) {
+                repository(owner: $owner, name: $name) {
+                  pullRequests(states: MERGED, first: 50, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+                    nodes {
+                      mergeCommit { oid }
+                      labels(first: 100) { nodes { name } }
+                    }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                }
+              }
+              """,
+              "variables": {"owner": owner, "name": name, "cursor": None},
+          }
+
+          allowed = False
+          while True:
+              req = request.Request("https://api.github.com/graphql", method="POST")
+              req.add_header("Authorization", f"Bearer {token}")
+              req.add_header("Content-Type", "application/json")
+              data = json.dumps(query).encode("utf-8")
+              with request.urlopen(req, data=data) as resp:
+                  payload = json.loads(resp.read().decode("utf-8"))
+
+              repo_data = payload.get("data", {}).get("repository", {})
+              pr_data = repo_data.get("pullRequests", {})
+              for pr in pr_data.get("nodes", []):
+                  merge_commit = pr.get("mergeCommit") or {}
+                  if merge_commit.get("oid") != sha:
+                      continue
+                  labels = {node.get("name") for node in pr.get("labels", {}).get("nodes", [])}
+                  if "release" in labels:
+                      allowed = True
+                  break
+              if allowed:
+                  break
+              page_info = pr_data.get("pageInfo", {})
+              if not page_info.get("hasNextPage"):
+                  break
+              query["variables"]["cursor"] = page_info.get("endCursor")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"allowed={'true' if allowed else 'false'}\n")
+          PY
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+      - name: Resolve version
+        id: version
+        run: |
+          version=$(python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          def read_version_from_init() -> str | None:
+              init_path = Path("src/brkraw_sordino/__init__.py")
+              if not init_path.exists():
+                  return None
+              text = init_path.read_text(encoding="utf-8")
+              match = re.search(r"__version__\\s*=\\s*['\"]([^'\"]+)['\"]", text)
+              if not match:
+                  return None
+              return match.group(1)
+
+          def read_version_from_pyproject() -> str | None:
+              pyproject = Path("pyproject.toml")
+              if not pyproject.exists():
+                  return None
+              text = pyproject.read_text(encoding="utf-8")
+              try:
+                  import tomllib
+              except ModuleNotFoundError:  # pragma: no cover
+                  import tomli as tomllib
+              data = tomllib.loads(text)
+              return data.get("project", {}).get("version")
+
+          version = read_version_from_init() or read_version_from_pyproject()
+          if not version:
+              raise SystemExit("No version found in src/brkraw_sordino/__init__.py or pyproject.toml")
+          print(version)
+          PY
+          )
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Check tag exists
+        id: tag
+        run: |
+          tag="${{ steps.version.outputs.value }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create and push tag
+        if: ${{ steps.release.outputs.allowed == 'true' && steps.tag.outputs.exists == 'false' }}
+        run: |
+          tag="${{ steps.version.outputs.value }}"
+          git tag "$tag" "${{ github.sha }}"
+          git push origin "$tag"
+      - name: Write release metadata
+        run: |
+          tag="${{ steps.version.outputs.value }}"
+          created="false"
+          if [ "${{ steps.release.outputs.allowed }}" = "true" ] && [ "${{ steps.tag.outputs.exists }}" = "false" ]; then
+            created="true"
+          fi
+          cat > release_metadata.json <<EOF
+          {"tag":"$tag","created":"$created"}
+          EOF
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: release_metadata.json
