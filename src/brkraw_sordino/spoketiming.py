@@ -107,6 +107,8 @@ def interpolate_spoketiming(complex_feed, sample_id, pro_id, ref_timestamps, tim
     phase_wrap = (phase_t + np.pi) % (2 * np.pi) - np.pi
     
     z_t = mag_t * np.exp(1j * phase_wrap)
+    if not np.isfinite(z_t).all():
+        z_t = np.nan_to_num(z_t, nan=0.0, posinf=0.0, neginf=0.0)
     corrected_data[0, sample_id, pro_id, :] = z_t.real
     corrected_data[1, sample_id, pro_id, :] = z_t.imag
     return corrected_data
