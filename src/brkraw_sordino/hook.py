@@ -14,11 +14,12 @@ from brkraw.resolver import datatype as dtype_resolver
 from brkraw.core import config as config_core
 from brkraw.core.fs import DatasetFile
 from brkraw.core.zip import ZippedFile
+from brkraw.apps.loader.helper import get_affine as get_affine_helper
 
 from numpy.typing import NDArray
 from .typing import Options
 from .traj import get_trajectory
-from .recon import get_dataobj_shape, recon_dataobj
+from .recon import get_dataobj_shape, parse_volume_shape, recon_dataobj
 from .spoketiming import prep_fid_segmentation, correct_spoketiming
 from .orientation import correct as correct_orientation
 
@@ -121,6 +122,11 @@ def get_dataobj(
     cache_files: list[str] = []
     setattr(scan, "_sordino_cache_files", cache_files)
     recon_info = _parse_recon_info(scan)
+    try:
+        spatial_shape = tuple(parse_volume_shape(recon_info, options))
+        setattr(scan, "_sordino_spatial_shape", spatial_shape)
+    except Exception:
+        setattr(scan, "_sordino_spatial_shape", None)
     fid_entry = _get_fid_entry(scan)
 
     with fid_entry.open() as fid_fobj:
@@ -204,6 +210,37 @@ def get_dataobj(
     logger.debug("Emitting single-channel magnitude output.")
     return correct_orientation(cast(np.ndarray, dataobj), recon_info)
 
+
+def get_affine(
+        scan: Any,
+        reco_id: Optional[int] = None,
+        decimals: Optional[int] = None,
+        **kwargs: Any,
+    ) -> Optional[Union[np.ndarray, Tuple[np.ndarray, ...]]]:
+    affine = get_affine_helper(scan, reco_id, decimals=decimals, **kwargs)
+    if affine is None:
+        return None
+    options = getattr(scan, "_sordino_options", None) or _build_options(kwargs)
+    ext_factors = options.ext_factors
+    spatial_shape = getattr(scan, "_sordino_spatial_shape", None)
+    if spatial_shape is None:
+        try:
+            recon_info = _parse_recon_info(scan)
+            spatial_shape = tuple(parse_volume_shape(recon_info, options))
+            setattr(scan, "_sordino_spatial_shape", spatial_shape)
+        except Exception:
+            spatial_shape = None
+    if spatial_shape is None:
+        return affine
+    affine_list = list(affine) if isinstance(affine, tuple) else [affine]
+    new_affine_list = []
+    for aff in affine_list:
+        scaled_affine = _apply_ext_factor_affine(aff, tuple(spatial_shape[:3]), ext_factors)
+        new_affine_list.append(scaled_affine)
+    if isinstance(affine, tuple):
+        return tuple(new_affine_list)
+    return new_affine_list[0]
+
 def _calc_slope_inter(data: np.ndarray) -> Tuple[np.ndarray, float, float]:
     inter = float(np.min(data))
     dmax = float(np.max(data))
@@ -258,18 +295,16 @@ def convert(
     **kwargs: Any,
 ):
     options = getattr(scan, "_sordino_options", None) or _build_options(kwargs)
-    ext_factors = options.ext_factors
     data_list = list(dataobj) if isinstance(dataobj, tuple) else [dataobj]
     affine_list = list(affine) if isinstance(affine, tuple) else [affine]
     nii_list = []
     for idx, data in enumerate(data_list):
         aff = affine_list[idx] if idx < len(affine_list) else affine_list[0]
-        scaled_affine = _apply_ext_factor_affine(aff, tuple(data.shape[:3]), ext_factors)
         img_u16, slope, inter = _calc_slope_inter(np.asarray(data))
         logger.debug('Calculated slope: %s, inter: %s', slope, inter)
-        nii = Nifti1Image(img_u16, scaled_affine)
-        nii.set_qform(scaled_affine, 1)
-        nii.set_sform(scaled_affine, 0)
+        nii = Nifti1Image(img_u16, aff)
+        nii.set_qform(aff, 1)
+        nii.set_sform(aff, 0)
         nii.header.set_slope_inter(slope, inter)
         try:
             nii.header.set_xyzt_units(xyz_units, t_units)
@@ -290,6 +325,6 @@ def convert(
     return nii_list[0] if nii_list else None
 
 
-HOOK = {"get_dataobj": get_dataobj, "convert": convert}
+HOOK = {"get_dataobj": get_dataobj, "get_affine": get_affine, "convert": convert}
 
-__all__ = ["HOOK", "get_dataobj", "convert"]
+__all__ = ["HOOK", "get_dataobj", "get_affine", "convert"]
