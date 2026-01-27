@@ -1,7 +1,8 @@
 import os
+import json
 import logging
 import numpy as np
-import tempfile
+from dataclasses import asdict
 from pathlib import Path
 
 from typing import Any, Optional, Tuple, Dict, Union, cast
@@ -19,8 +20,19 @@ from brkraw.apps.loader.helper import get_affine as get_affine_helper
 from numpy.typing import NDArray
 from .typing import Options
 from .traj import get_trajectory
-from .recon import get_dataobj_shape, parse_volume_shape, recon_dataobj
-from .spoketiming import prep_fid_segmentation, correct_spoketiming
+from .recon import (
+    build_recon_cache_path,
+    get_dataobj_shape,
+    get_num_frames,
+    parse_fid_info,
+    parse_volume_shape,
+    recon_dataobj,
+)
+from .spoketiming import (
+    build_spoketiming_cache_path,
+    prep_fid_segmentation,
+    correct_spoketiming,
+)
 from .orientation import correct as correct_orientation
 
 
@@ -104,6 +116,59 @@ def _parse_recon_info(scan):
     return recon_info
 
 
+def _get_fid_identity(fid_entry: FileIO) -> str:
+    if isinstance(fid_entry, DatasetFile):
+        return fid_entry.path
+    if isinstance(fid_entry, ZippedFile):
+        return fid_entry.arcname
+    return getattr(fid_entry, "name", "fid")
+
+
+def _build_cache_params(
+    scan: Any,
+    reco_id: Optional[int],
+    fid_entry: FileIO,
+    options: Options,
+    recon_info: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "scan_id": getattr(scan, "scan_id", None),
+        "reco_id": reco_id,
+        "fid": _get_fid_identity(fid_entry),
+        "options": asdict(options),
+        "recon_info": recon_info,
+    }
+
+
+def _cache_meta_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".json")
+
+
+def _load_cache_meta(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
+def _write_cache_meta(path: Path, meta: Dict[str, Any]) -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(meta, handle, sort_keys=True)
+
+
+def _is_cache_valid(path: Path, *, expected_size: Optional[int] = None) -> bool:
+    if not path.exists():
+        return False
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return False
+    if expected_size is not None and size != expected_size:
+        return False
+    return True
+
+
 def _get_fid_entry(scan: Any) -> FileIO:
     fid_entry = fid_resolver.get_fid(scan)
     if fid_entry is None:
@@ -128,38 +193,109 @@ def get_dataobj(
     except Exception:
         setattr(scan, "_sordino_spatial_shape", None)
     fid_entry = _get_fid_entry(scan)
+    cache_params = _build_cache_params(scan, reco_id, fid_entry, options, recon_info)
+    img_cache_path = build_recon_cache_path(options.cache_dir, cache_params)
+    img_meta_path = _cache_meta_path(img_cache_path)
+    img_meta = _load_cache_meta(img_meta_path)
+    cached_dtype: Optional[np.dtype] = None
+    cached_shape: Optional[list[int]] = None
+    if img_meta:
+        try:
+            cached_dtype = np.dtype(img_meta.get("dtype"))
+            cached_shape = img_meta.get("shape")
+            if cached_shape:
+                expected_size = int(np.prod(cached_shape) * cached_dtype.itemsize)
+                if not _is_cache_valid(img_cache_path, expected_size=expected_size):
+                    cached_dtype = None
+                    cached_shape = None
+        except Exception:
+            cached_dtype = None
+            cached_shape = None
 
-    with fid_entry.open() as fid_fobj:
-        traj = get_trajectory(recon_info, options)
+    if cached_dtype is None or cached_shape is None:
+        with fid_entry.open() as fid_fobj:
+            traj = get_trajectory(recon_info, options)
+            img_temp_path = img_cache_path.with_suffix(img_cache_path.suffix + ".partial")
+            if img_temp_path.exists():
+                try:
+                    os.remove(img_temp_path)
+                except OSError:
+                    pass
+            with open(img_temp_path, "w+b") as img_fobj:
+                logger.debug("Created temp image file: %s", img_temp_path)
+                cache_files.append(str(img_temp_path))
 
-        with tempfile.NamedTemporaryFile(   
-            mode="w+b", delete=False, dir=options.cache_dir
-        ) as img_fobj:  # where reconstructed dataobj will be stored.
-            cache_files.append(img_fobj.name)
-            logger.debug("Created temp image file: %s", img_fobj.name)
-            
-            if options.correct_spoketiming and recon_info['NRepetitions'] > 1:
-                logger.debug("Spoketiming correction enabled.")
-                with tempfile.NamedTemporaryFile(
-                    mode="w+b", delete=False, dir=options.cache_dir
-                ) as stc_fobj:  # where spoketiming corrected fid will be stored.
-                    cache_files.append(stc_fobj.name)
-                    logger.debug("Created temp spoketiming file: %s", stc_fobj.name)
-                    
-                    segs = prep_fid_segmentation(fid_fobj, recon_info, options)
-                    logger.info("Spoketiming correction: %s segment(s).", segs.shape[0])
+                if options.correct_spoketiming and recon_info['NRepetitions'] > 1:
+                    logger.debug("Spoketiming correction enabled.")
+                    fid_shape, fid_dtype = parse_fid_info(recon_info)
+                    num_frames = get_num_frames(recon_info, options)
+                    stc_expected_size = int(np.prod(fid_shape) * fid_dtype.itemsize * num_frames)
+                    stc_cache_path = build_spoketiming_cache_path(options.cache_dir, cache_params)
+                    stc_meta_path = _cache_meta_path(stc_cache_path)
+                    stc_temp_path = stc_cache_path.with_suffix(stc_cache_path.suffix + ".partial")
+                    stc_param = {
+                        "buffer_size": int(np.prod(fid_shape) * fid_dtype.itemsize),
+                        "dtype": fid_dtype,
+                    }
 
-                    stc_param = correct_spoketiming(segs, fid_fobj, stc_fobj, recon_info, options)
-                    dtype = recon_dataobj(stc_fobj, traj, recon_info, img_fobj, options, 
-                                          override_buffer_size=stc_param['buffer_size'],
-                                          override_dtype=stc_param['dtype'])
-            else:
-                logger.debug("Spoketiming correction disabled.")
-                dtype = recon_dataobj(fid_fobj, traj, recon_info, img_fobj, options)
-    
-    with open(img_fobj.name, "rb") as img_fobj:
-        dataobj_shape = get_dataobj_shape(recon_info, options)
-        dataobj = np.frombuffer(img_fobj.read(), dtype=dtype).reshape(dataobj_shape, order='F')
+                    if _is_cache_valid(stc_cache_path, expected_size=stc_expected_size):
+                        logger.debug("Using cached spoketiming file: %s", stc_cache_path)
+                    else:
+                        if stc_temp_path.exists():
+                            try:
+                                os.remove(stc_temp_path)
+                            except OSError:
+                                pass
+                        with open(stc_temp_path, "w+b") as stc_fobj:
+                            cache_files.append(str(stc_temp_path))
+                            logger.debug("Created temp spoketiming file: %s", stc_temp_path)
+                            segs = prep_fid_segmentation(fid_fobj, recon_info, options)
+                            logger.info("Spoketiming correction: %s segment(s).", segs.shape[0])
+                            stc_param = correct_spoketiming(
+                                segs, fid_fobj, stc_fobj, recon_info, options
+                            )
+                        os.replace(stc_temp_path, stc_cache_path)
+                        _write_cache_meta(
+                            stc_meta_path,
+                            {
+                                "dtype": np.dtype(stc_param["dtype"]).str,
+                                "buffer_size": int(stc_param["buffer_size"]),
+                                "size": stc_expected_size,
+                            },
+                        )
+
+                    with open(stc_cache_path, "rb") as stc_fobj:
+                        dtype = recon_dataobj(
+                            stc_fobj,
+                            traj,
+                            recon_info,
+                            img_fobj,
+                            options,
+                            override_buffer_size=stc_param['buffer_size'],
+                            override_dtype=stc_param['dtype'],
+                        )
+                else:
+                    logger.debug("Spoketiming correction disabled.")
+                    dtype = recon_dataobj(fid_fobj, traj, recon_info, img_fobj, options)
+            os.replace(img_temp_path, img_cache_path)
+        dataobj_shape = list(get_dataobj_shape(recon_info, options))
+        cached_dtype = np.dtype(dtype)
+        cached_shape = list(dataobj_shape)
+        _write_cache_meta(
+            img_meta_path,
+            {
+                "dtype": cached_dtype.str,
+                "shape": list(cached_shape),
+            },
+        )
+    else:
+        logger.debug("Using cached recon file: %s", img_cache_path)
+
+    if cached_shape is None:
+        cached_shape = list(get_dataobj_shape(recon_info, options))
+    assert cached_dtype is not None
+    with open(img_cache_path, "rb") as img_fobj:
+        dataobj = np.frombuffer(img_fobj.read(), dtype=cached_dtype).reshape(cached_shape, order='F')
     num_receivers = recon_info.get("EncNReceivers", 1)
     if not options.as_complex:
         logger.debug("Converting to magnitude (as_complex=False).")

@@ -1,5 +1,8 @@
 import os
+import json
+import hashlib
 import platform
+from pathlib import Path
 import numpy as np
 from typing import Any, Dict, Tuple, Optional
 from numpy.typing import NDArray
@@ -9,6 +12,16 @@ from .helper import progressbar
 from .typing import Options
 
 logger = logging.getLogger("brkraw.sordino")
+
+
+def _hash_cache_params(params: Dict[str, Any], *, salt: str) -> str:
+    payload = json.dumps(params, sort_keys=True, default=str, ensure_ascii=True)
+    return hashlib.sha1(f"{salt}:{payload}".encode("utf-8")).hexdigest()
+
+
+def build_recon_cache_path(cache_dir: Path, cache_params: Dict[str, Any]) -> Path:
+    cache_hash = _hash_cache_params(cache_params, salt="recon")
+    return cache_dir / f"recon_{cache_hash}.bin"
 
 def _get_current_rss_gb() -> Optional[float]:
     if platform.system() != "Linux":

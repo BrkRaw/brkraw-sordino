@@ -1,5 +1,7 @@
 import gc
 import os
+import json
+import hashlib
 import logging
 try:
     import resource
@@ -9,12 +11,23 @@ import platform
 from .helper import progressbar
 import numpy as np
 from typing import Dict, Any, Optional
+from pathlib import Path
 from scipy.interpolate import interp1d
 from .recon import get_num_frames, parse_fid_info
 from .typing import Options
 
 logger = logging.getLogger("brkraw.sordino")
 _MEMORY_SAFETY_FACTOR = 3.4
+
+
+def _hash_cache_params(params: Dict[str, Any], *, salt: str) -> str:
+    payload = json.dumps(params, sort_keys=True, default=str, ensure_ascii=True)
+    return hashlib.sha1(f"{salt}:{payload}".encode("utf-8")).hexdigest()
+
+
+def build_spoketiming_cache_path(cache_dir: Path, cache_params: Dict[str, Any]) -> Path:
+    cache_hash = _hash_cache_params(cache_params, salt="stc")
+    return cache_dir / f"stc_{cache_hash}.bin"
 
 def _get_current_rss_gb() -> Optional[float]:
     if platform.system() != "Linux":
