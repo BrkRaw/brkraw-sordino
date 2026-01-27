@@ -12,7 +12,6 @@ from typing import Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-INIT_PATH = REPO_ROOT / "src" / "brkraw_sordino" / "__init__.py"
 RELEASE_NOTES_PATH = REPO_ROOT / "RELEASE_NOTES.md"
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 
@@ -72,15 +71,6 @@ def parse_owner_repo(remote_url: str) -> tuple[str, str]:
     return match.group("owner"), repo
 
 
-def split_owner_repo(full_repo: str) -> tuple[str, str]:
-    if "/" not in full_repo:
-        raise SystemExit(f"Invalid repo name (expected owner/repo): {full_repo}")
-    owner, repo = full_repo.split("/", 1)
-    if not owner or not repo:
-        raise SystemExit(f"Invalid repo name (expected owner/repo): {full_repo}")
-    return owner, repo
-
-
 def ensure_remote_branch(remote: str, branch: str, *, dry_run: bool) -> None:
     if dry_run:
         logger.info("[dry-run] Would ensure remote branch exists: %s/%s", remote, branch)
@@ -134,32 +124,48 @@ def commit_if_changed(
 
 
 def gh_pr_number(upstream_repo: str, head_ref: str) -> str | None:
-    owner, repo = split_owner_repo(upstream_repo)
     result = run_cmd(
         [
             "gh",
-            "api",
-            f"repos/{owner}/{repo}/pulls",
-            "-f",
-            f"head={head_ref}",
-            "-f",
-            "state=all",
-            "-f",
-            "per_page=1",
+            "pr",
+            "view",
+            "--repo",
+            upstream_repo,
+            "--head",
+            head_ref,
+            "--json",
+            "number",
             "--jq",
-            ".[0].number",
+            ".number",
         ],
         check=False,
     )
     if result.returncode != 0:
-        return None
-    value = result.stdout.strip()
-    return value or None
+        list_result = run_cmd(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                upstream_repo,
+                "--head",
+                head_ref,
+                "--json",
+                "number",
+                "--jq",
+                ".[0].number",
+            ],
+            check=False,
+        )
+        if list_result.returncode != 0:
+            return None
+        return list_result.stdout.strip() or None
+    return result.stdout.strip()
 
 
 def gh_pr_create(
     upstream_repo: str, base_branch: str, head_ref: str, title: str, body: str, *, dry_run: bool
-) -> str | None:
+) -> None:
     if dry_run:
         logger.info(
             "[dry-run] Would create PR in %s: base=%s, head=%s",
@@ -168,29 +174,23 @@ def gh_pr_create(
             head_ref,
         )
         logger.info("[dry-run] Title: %s", title)
-        return None
-    owner, repo = split_owner_repo(upstream_repo)
-    result = run_cmd(
-        [
-            "gh",
-            "api",
-            "-X",
-            "POST",
-            f"repos/{owner}/{repo}/pulls",
-            "-f",
-            f"base={base_branch}",
-            "-f",
-            f"head={head_ref}",
-            "-f",
-            f"title={title}",
-            "-f",
-            f"body={body}",
-            "--jq",
-            ".number",
-        ]
-    )
-    value = result.stdout.strip()
-    return value or None
+        return
+    args = [
+        "gh",
+        "pr",
+        "create",
+        "--repo",
+        upstream_repo,
+        "--base",
+        base_branch,
+        "--head",
+        head_ref,
+        "--title",
+        title,
+        "--body",
+        body,
+    ]
+    run_cmd(args)
 
 
 def gh_pr_edit(upstream_repo: str, pr_number: str, body: str, *, dry_run: bool) -> None:
@@ -201,16 +201,16 @@ def gh_pr_edit(upstream_repo: str, pr_number: str, body: str, *, dry_run: bool) 
             upstream_repo,
         )
         return
-    owner, repo = split_owner_repo(upstream_repo)
     run_cmd(
         [
             "gh",
-            "api",
-            "-X",
-            "PATCH",
-            f"repos/{owner}/{repo}/pulls/{pr_number}",
-            "-f",
-            f"body={body}",
+            "pr",
+            "edit",
+            pr_number,
+            "--repo",
+            upstream_repo,
+            "--body",
+            body,
         ]
     )
 
@@ -224,16 +224,16 @@ def gh_pr_add_label(upstream_repo: str, pr_number: str, label: str, *, dry_run: 
             upstream_repo,
         )
         return
-    owner, repo = split_owner_repo(upstream_repo)
     run_cmd(
         [
             "gh",
-            "api",
-            "-X",
-            "POST",
-            f"repos/{owner}/{repo}/issues/{pr_number}/labels",
-            "-f",
-            f"labels[]={label}",
+            "pr",
+            "edit",
+            pr_number,
+            "--repo",
+            upstream_repo,
+            "--add-label",
+            label,
         ]
     )
 
@@ -261,7 +261,7 @@ def ensure_pr(
         logger.warning("No commits to open PR; skipping PR creation.")
         return None
 
-    created_pr = gh_pr_create(
+    gh_pr_create(
         upstream_repo_full,
         base_branch,
         head_ref,
@@ -272,19 +272,18 @@ def ensure_pr(
     if dry_run:
         return "DRY_RUN_PR"
 
-    if created_pr:
-        return created_pr
-
-    for _ in range(3):
-        time.sleep(2)
+    pr_number = None
+    for attempt in range(5):
         pr_number = gh_pr_number(upstream_repo_full, head_ref)
         if pr_number:
-            return pr_number
-
-    pr_number = gh_pr_number(upstream_repo_full, head_ref)
+            break
+        if attempt < 4:
+            logger.info("Waiting for PR to become visible (%s/5)...", attempt + 1)
+            time.sleep(3)
     if not pr_number:
         logger.warning("PR created but could not retrieve PR number.")
         return None
+    logger.info("Created PR #%s", pr_number)
     return pr_number
 
 
@@ -317,16 +316,6 @@ def update_version_files(version: str) -> None:
         raise SystemExit("Could not update version in pyproject.toml.")
     PYPROJECT_PATH.write_text(pyproject_updated, encoding="utf-8")
 
-    init_text = INIT_PATH.read_text(encoding="utf-8")
-    init_updated = re.sub(
-        r'(?m)^(__version__\s*=\s*["\'])([^"\']+)(["\'])',
-        rf"\g<1>{version}\g<3>",
-        init_text,
-        count=1,
-    )
-    if init_text == init_updated:
-        raise SystemExit(f"Could not update __version__ in {INIT_PATH}.")
-    INIT_PATH.write_text(init_updated, encoding="utf-8")
 
 
 def generate_release_notes(version: str, upstream_ref: str) -> None:
@@ -410,7 +399,7 @@ def main() -> int:
 
     # 1) release prep changes
     update_version_files(args.version)
-    release_prep_group = [INIT_PATH, PYPROJECT_PATH]
+    release_prep_group = [PYPROJECT_PATH]
     commit_if_changed(
         args.prep_message.format(version=args.version),
         release_prep_group,

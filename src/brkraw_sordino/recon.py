@@ -1,5 +1,8 @@
 import os
+import json
+import hashlib
 import platform
+from pathlib import Path
 import numpy as np
 from typing import Any, Dict, Tuple, Optional
 from numpy.typing import NDArray
@@ -9,6 +12,16 @@ from .helper import progressbar
 from .typing import Options
 
 logger = logging.getLogger("brkraw.sordino")
+
+
+def _hash_cache_params(params: Dict[str, Any], *, salt: str) -> str:
+    payload = json.dumps(params, sort_keys=True, default=str, ensure_ascii=True)
+    return hashlib.sha1(f"{salt}:{payload}".encode("utf-8")).hexdigest()
+
+
+def build_recon_cache_path(cache_dir: Path, cache_params: Dict[str, Any]) -> Path:
+    cache_hash = _hash_cache_params(cache_params, salt="recon")
+    return cache_dir / f"recon_{cache_hash}.bin"
 
 def _get_current_rss_gb() -> Optional[float]:
     if platform.system() != "Linux":
@@ -26,6 +39,19 @@ def _get_current_rss_gb() -> Optional[float]:
 
 
 def parse_fid_info(recon_info: Dict[str, Any]) -> Tuple[np.ndarray, np.dtype]:
+    """Parse FID dimensions and dtype from reconstruction metadata.
+
+    Args:
+        recon_info (Dict[str, Any]): Reconstruction metadata including
+            "EncNReceivers", "NPoints", "NPro", and "FIDDataType".
+
+    Returns:
+        Tuple[np.ndarray, np.dtype]: FID shape array
+        `[2, n_points, n_receivers, n_pro]` and the FID dtype.
+
+    Raises:
+        ValueError: If required dimensions are missing or zero.
+    """
     n_receivers = int(recon_info.get("EncNReceivers") or 0)
     n_points = int(recon_info.get("NPoints") or 0)
     n_pro = int(recon_info.get("NPro") or 0)
@@ -36,7 +62,16 @@ def parse_fid_info(recon_info: Dict[str, Any]) -> Tuple[np.ndarray, np.dtype]:
 
 
 def get_num_frames(recon_info: Dict[str, Any], options: Options):
-    """ Return number of data frames need to be reconstructed
+    """Return the number of data frames to reconstruct.
+
+    Args:
+        recon_info (Dict[str, Any]): Reconstruction metadata containing
+            "NRepetitions".
+        options (Options): Reconstruction options that may include "offset"
+            and "num_frames".
+
+    Returns:
+        int: Number of frames to reconstruct after applying offset and limits.
     """
     total_frames = recon_info['NRepetitions']
     offset = getattr(options, 'offset') or 0
@@ -51,6 +86,16 @@ def get_num_frames(recon_info: Dict[str, Any], options: Options):
 
 def parse_volume_shape(recon_info: Dict[str, Any], 
                        options: Options) -> NDArray[np.int_]:
+    """Determine the output volume shape for reconstruction.
+
+    Args:
+        recon_info (Dict[str, Any]): Reconstruction metadata with "Matrix" or
+            "NPoints".
+        options (Options): Reconstruction options that may include "ext_factors".
+
+    Returns:
+        NDArray[np.int_]: Volume shape array after applying extension factors.
+    """
     matrix = recon_info.get("Matrix")
     if matrix is None:
         matrix = [int(recon_info.get("NPoints") or 0)] * 3
@@ -63,6 +108,15 @@ def parse_volume_shape(recon_info: Dict[str, Any],
 
 def get_dataobj_shape(recon_info: Dict[str, Any], 
                       options: Options):
+    """Compute the output data object shape including frames and receivers.
+
+    Args:
+        recon_info (Dict[str, Any]): Reconstruction metadata.
+        options (Options): Reconstruction options.
+
+    Returns:
+        list[int]: Shape of the reconstructed data object.
+    """
     num_receivers = parse_fid_info(recon_info)[0][2]
     vol_shape = parse_volume_shape(recon_info, options)
     num_frame = get_num_frames(recon_info, options)
@@ -74,11 +128,22 @@ def get_dataobj_shape(recon_info: Dict[str, Any],
 
 
 def nufft_adjoint(kspace, traj, volume_shape, log_counter=0, operator='finufft'):
-    """Run nufft and return the reconstucted image"""
+    """Run adjoint NUFFT and return the reconstructed image.
+
+    Args:
+        kspace (np.ndarray): Input k-space data.
+        traj (np.ndarray): Trajectory coordinates.
+        volume_shape (Sequence[int]): Output volume shape.
+        log_counter (int, optional): Log verbosity flag; logs details on 0.
+        operator (str, optional): NUFFT backend name (e.g., "finufft").
+
+    Returns:
+        np.ndarray: Reconstructed complex image volume.
+    """
     dcf = np.sqrt(np.square(traj).sum(-1)).flatten() ** 2
     dcf /= dcf.max()
     if log_counter == 0:
-        logger.debug(" + NUFFT processing")
+        logger.debug("Processing NUFFT")
         logger.debug(" - DCF shape: %s", dcf.shape)
         logger.debug(" - Trajectory shape: %s", traj.shape)
         logger.debug(" - Volume shape: %s", volume_shape)
@@ -96,7 +161,21 @@ def recon_dataobj(fid_fobj,
                   options: Options,
                   override_buffer_size=None, 
                   override_dtype=None):
-    logger.debug("+ Reconstruction")
+    """Reconstruct image volumes from FID data and write to an output file.
+
+    Args:
+        fid_fobj (IO[bytes]): Input FID file handle.
+        traj (np.ndarray): K-space trajectory array.
+        recon_info (Dict[str, Any]): Reconstruction metadata.
+        img_fobj (IO[bytes]): Output image file handle.
+        options (Options): Reconstruction options.
+        override_buffer_size (Optional[int]): Override FID frame buffer size.
+        override_dtype (Optional[np.dtype]): Override FID dtype.
+
+    Returns:
+        np.dtype: Dtype of the reconstructed output volumes.
+    """
+    logger.debug("Processing reconstruction")
     img_fobj.seek(0)
     fid_shape, fid_dtype = parse_fid_info(recon_info)
     volume_shape = parse_volume_shape(recon_info, options)
@@ -153,7 +232,7 @@ def recon_dataobj(fid_fobj,
         if n == 0:
             dtype = recon_vol.dtype
         img_fobj.write(recon_vol.T.flatten(order="C").tobytes())
-    logger.debug("+ Reconstruction done")
+    logger.debug("done")
     return dtype
 
 __all__ = [
