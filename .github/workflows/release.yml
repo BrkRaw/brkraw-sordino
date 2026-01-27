@@ -1,9 +1,9 @@
 name: Create Release
 
 on:
-  workflow_run:
-    workflows: ["Release On Merge"]
-    types: [completed]
+  push:
+    tags:
+      - "*"
   workflow_dispatch:
     inputs:
       tag:
@@ -14,53 +14,23 @@ on:
 permissions:
   contents: write
   discussions: write
+  id-token: write
 
 jobs:
   release:
-    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') }}
+    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' }}
     runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.prerelease.outputs.value }}
+      tag: ${{ steps.tag.outputs.value }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Resolve tag
         id: tag
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-            created="true"
+            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           else
-            tag="$(git tag --points-at ${{ github.event.workflow_run.head_sha }} | head -n 1)"
-            if [ -n "$tag" ]; then
-              created="true"
-            else
-              created="false"
-            fi
-          fi
-          echo "value=$tag" >> "$GITHUB_OUTPUT"
-          echo "created=$created" >> "$GITHUB_OUTPUT"
-      - name: Ensure release needed
-        if: ${{ steps.tag.outputs.created != 'true' }}
-        run: |
-          echo "Release already exists or tag not created; skipping."
-          exit 0
-      - name: Ensure tag provided
-        run: |
-          tag="${{ steps.tag.outputs.value }}"
-          if [ -z "$tag" ]; then
-            echo "Tag not resolved; skipping release."
-            exit 0
-          fi
-      - name: Ensure tag exists
-        id: tag_exists
-        run: |
-          tag="${{ steps.tag.outputs.value }}"
-          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-            echo "value=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Tag ${tag} not found; skipping release."
-            echo "value=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "value=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
         with:
@@ -74,28 +44,13 @@ jobs:
           else
             echo "value=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Write release metadata
-        run: |
-          tag="${{ steps.tag.outputs.value }}"
-          prerelease="${{ steps.prerelease.outputs.value }}"
-          cat > release_metadata.json <<EOF
-          {"tag":"$tag","prerelease":"$prerelease"}
-          EOF
-      - name: Upload release metadata
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-metadata
-          path: release_metadata.json
       - name: Create GitHub Release
-        if: ${{ steps.tag_exists.outputs.value == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.value }}
           name: ${{ steps.tag.outputs.value }}
           body_path: RELEASE_NOTES.md
           prerelease: ${{ steps.prerelease.outputs.value }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Post release announcement
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -120,7 +75,7 @@ jobs:
           title = f"Release {tag}"
           body = f"[Release {tag}]({release_url})"
           if notes:
-              body = f"{body}\\n\\n{notes}"
+              body = f"{body}\n\n{notes}"
 
           query = {
               "query": """
@@ -179,3 +134,11 @@ jobs:
           if url:
               print(f"Created discussion: {url}")
           PY
+
+  publish:
+    if: ${{ github.repository == 'BrkRaw/brkraw-sordino' }}
+    needs: [release]
+    uses: ./.github/workflows/publish.yml
+    with:
+      target: ${{ needs.release.outputs.prerelease == 'true' && 'testpypi' || 'pypi' }}
+      tag: ${{ needs.release.outputs.tag }}
