@@ -15,6 +15,7 @@ permissions:
   contents: write
   discussions: write
   id-token: write
+  actions: write
 
 jobs:
   release:

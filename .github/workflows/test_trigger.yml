@@ -1,0 +1,13 @@
+name: Test Trigger
+on:
+  workflow_dispatch:
+permissions:
+  actions: write
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Test Echo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run test_echo.yml -f message="Hello from Trigger"
