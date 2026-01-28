@@ -1,6 +1,6 @@
 # brkraw-sordino
 
-SORDINO-ZTE reconstruction hook for BrkRaw.
+SORDINO reconstruction hook for BrkRaw.
 
 ## Install
 
