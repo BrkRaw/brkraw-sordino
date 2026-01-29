@@ -8,7 +8,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -123,49 +123,35 @@ def commit_if_changed(
     return True
 
 
-def gh_pr_number(upstream_repo: str, head_ref: str) -> str | None:
+def gh_pr_number(
+    upstream_repo: str, head_ref: str, state: Literal["open", "closed", "all"] = "open"
+) -> str | None:
+    owner, repo = upstream_repo.split("/", 1)
     result = run_cmd(
         [
             "gh",
-            "pr",
-            "view",
-            "--repo",
-            upstream_repo,
-            "--head",
-            head_ref,
-            "--json",
-            "number",
+            "api",
+            f"repos/{owner}/{repo}/pulls",
+            "-X",
+            "GET",
+            "-f",
+            f"head={head_ref}",
+            "-f",
+            f"state={state}",
             "--jq",
-            ".number",
+            ".[0].number",
         ],
         check=False,
     )
     if result.returncode != 0:
-        list_result = run_cmd(
-            [
-                "gh",
-                "pr",
-                "list",
-                "--repo",
-                upstream_repo,
-                "--head",
-                head_ref,
-                "--json",
-                "number",
-                "--jq",
-                ".[0].number",
-            ],
-            check=False,
-        )
-        if list_result.returncode != 0:
-            return None
-        return list_result.stdout.strip() or None
-    return result.stdout.strip()
+        return None
+    value = result.stdout.strip()
+    return value or None
 
 
 def gh_pr_create(
     upstream_repo: str, base_branch: str, head_ref: str, title: str, body: str, *, dry_run: bool
-) -> None:
+) -> str | None:
     if dry_run:
         logger.info(
             "[dry-run] Would create PR in %s: base=%s, head=%s",
@@ -174,23 +160,29 @@ def gh_pr_create(
             head_ref,
         )
         logger.info("[dry-run] Title: %s", title)
-        return
-    args = [
-        "gh",
-        "pr",
-        "create",
-        "--repo",
-        upstream_repo,
-        "--base",
-        base_branch,
-        "--head",
-        head_ref,
-        "--title",
-        title,
-        "--body",
-        body,
-    ]
-    run_cmd(args)
+        return None
+    owner, repo = upstream_repo.split("/", 1)
+    result = run_cmd(
+        [
+            "gh",
+            "api",
+            f"repos/{owner}/{repo}/pulls",
+            "-X",
+            "POST",
+            "-f",
+            f"title={title}",
+            "-f",
+            f"head={head_ref}",
+            "-f",
+            f"base={base_branch}",
+            "-f",
+            f"body={body}",
+            "--jq",
+            ".number",
+        ]
+    )
+    value = result.stdout.strip()
+    return value or None
 
 
 def gh_pr_edit(upstream_repo: str, pr_number: str, body: str, *, dry_run: bool) -> None:
@@ -201,16 +193,16 @@ def gh_pr_edit(upstream_repo: str, pr_number: str, body: str, *, dry_run: bool) 
             upstream_repo,
         )
         return
+    owner, repo = upstream_repo.split("/", 1)
     run_cmd(
         [
             "gh",
-            "pr",
-            "edit",
-            pr_number,
-            "--repo",
-            upstream_repo,
-            "--body",
-            body,
+            "api",
+            f"repos/{owner}/{repo}/pulls/{pr_number}",
+            "-X",
+            "PATCH",
+            "-f",
+            f"body={body}",
         ]
     )
 
@@ -224,16 +216,16 @@ def gh_pr_add_label(upstream_repo: str, pr_number: str, label: str, *, dry_run: 
             upstream_repo,
         )
         return
+    owner, repo = upstream_repo.split("/", 1)
     run_cmd(
         [
             "gh",
-            "pr",
-            "edit",
-            pr_number,
-            "--repo",
-            upstream_repo,
-            "--add-label",
-            label,
+            "api",
+            f"repos/{owner}/{repo}/issues/{pr_number}/labels",
+            "-X",
+            "POST",
+            "-f",
+            f"labels[]={label}",
         ]
     )
 
@@ -245,7 +237,6 @@ def ensure_pr(
     head_ref: str,
     title: str,
     body: str,
-    can_create: bool,
     no_pr: bool,
     dry_run: bool,
 ) -> str | None:
@@ -253,15 +244,17 @@ def ensure_pr(
         logger.info("[no-pr] PR operations disabled; skipping PR lookup/create.")
         return None
 
-    pr_number = gh_pr_number(upstream_repo_full, head_ref)
+    pr_number = gh_pr_number(upstream_repo_full, head_ref, state="open")
     if pr_number:
+        logger.info(
+            "Existing PR found for %s (head=%s): #%s",
+            upstream_repo_full,
+            head_ref,
+            pr_number,
+        )
         return pr_number
 
-    if not can_create:
-        logger.warning("No commits to open PR; skipping PR creation.")
-        return None
-
-    gh_pr_create(
+    created_pr = gh_pr_create(
         upstream_repo_full,
         base_branch,
         head_ref,
@@ -271,19 +264,21 @@ def ensure_pr(
     )
     if dry_run:
         return "DRY_RUN_PR"
+    if created_pr:
+        return created_pr
 
     pr_number = None
     for attempt in range(5):
-        pr_number = gh_pr_number(upstream_repo_full, head_ref)
+        pr_number = gh_pr_number(upstream_repo_full, head_ref, state="open")
         if pr_number:
             break
         if attempt < 4:
             logger.info("Waiting for PR to become visible (%s/5)...", attempt + 1)
             time.sleep(3)
     if not pr_number:
-        logger.warning("PR created but could not retrieve PR number.")
-        return None
-    logger.info("Created PR #%s", pr_number)
+        raise SystemExit("PR created but could not retrieve PR number.")
+    else:
+        logger.info("Created PR #%s", pr_number)
     return pr_number
 
 
