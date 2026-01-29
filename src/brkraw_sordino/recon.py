@@ -154,6 +154,17 @@ def nufft_adjoint(kspace, traj, volume_shape, log_counter=0, operator='finufft')
     return complex_img
 
 
+def correct_offreso(kspace: np.ndarray, shift_freq: float, *, eff_bandwidth: float, over_sampling: float) -> np.ndarray:
+    if shift_freq == 0.0:
+        return kspace
+    bw = float(eff_bandwidth) * float(over_sampling)
+    if bw == 0.0:
+        return kspace
+    num_samp = kspace.shape[1]
+    phase = np.exp(-1j * 2 * np.pi * shift_freq * ((np.arange(num_samp) + 1) / bw))
+    return kspace * phase[np.newaxis, :]
+
+
 def recon_dataobj(fid_fobj, 
                   traj, 
                   recon_info: Dict[str, Any],
@@ -198,6 +209,11 @@ def recon_dataobj(fid_fobj,
     logger.debug(" - Reconstruction traj shape: %s", trimmed_traj.shape)
     
     dtype = None
+    offreso_ch = getattr(options, "offreso_ch", None)
+    offreso_freq = float(getattr(options, "offreso_freq", 0.0) or 0.0)
+    eff_bandwidth = recon_info.get("EffBandwidth_Hz")
+    over_sampling = recon_info.get("OverSampling")
+
     for n in progressbar(range(num_frames), desc='frames', ncols=100):
         buffer = fid_fobj.read(buffer_size)
         vol = np.frombuffer(buffer, dtype=fid_dtype).reshape(fid_shape, order='F')
@@ -222,12 +238,50 @@ def recon_dataobj(fid_fobj,
                 if n == 0:
                     logger.debug(" - Channel: %s", ch_id)
                 _k_space = k_space[:, ch_id, :]
+                apply_offreso = offreso_ch is None or ch_id == int(offreso_ch) - 1
+                if (
+                    apply_offreso
+                    and offreso_freq
+                    and eff_bandwidth is not None
+                    and over_sampling is not None
+                ):
+                    if n == 0:
+                        logger.info(
+                            " - Correcting off-resonance: ch=%s, freq=%.6f Hz",
+                            (offreso_ch if offreso_ch is not None else "all"),
+                            offreso_freq,
+                        )
+                    _k_space = correct_offreso(
+                        _k_space,
+                        offreso_freq,
+                        eff_bandwidth=eff_bandwidth,
+                        over_sampling=over_sampling,
+                    )
                 _vol = nufft_adjoint(_k_space, trimmed_traj, volume_shape, n)
                 recon_vol.append(_vol)
             recon_vol = np.stack(recon_vol, axis=0)
         else:
             if n == 0:
                 logger.debug(" - Single-channel reconstruction")
+            apply_offreso = offreso_ch is None or int(offreso_ch) == 1
+            if (
+                apply_offreso
+                and offreso_freq
+                and eff_bandwidth is not None
+                and over_sampling is not None
+            ):
+                if n == 0:
+                    logger.info(
+                        " - Correcting off-resonance: ch=%s, freq=%.6f Hz",
+                        (offreso_ch if offreso_ch is not None else "all"),
+                        offreso_freq,
+                    )
+                k_space = correct_offreso(
+                    k_space,
+                    offreso_freq,
+                    eff_bandwidth=eff_bandwidth,
+                    over_sampling=over_sampling,
+                )
             recon_vol = nufft_adjoint(k_space, trimmed_traj, volume_shape, n)
         if n == 0:
             dtype = recon_vol.dtype
