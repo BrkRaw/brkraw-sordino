@@ -3,7 +3,7 @@ from numpy.typing import NDArray
 from typing import Dict, Any, cast
 import logging
 
-logger = logging.getLogger("brkraw.sordino")
+logger = logging.getLogger(__name__)
 
 
 PLANE_PERM = {

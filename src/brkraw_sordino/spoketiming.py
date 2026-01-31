@@ -16,7 +16,7 @@ from scipy.interpolate import interp1d
 from .recon import get_num_frames, parse_fid_info
 from .typing import Options
 
-logger = logging.getLogger("brkraw.sordino")
+logger = logging.getLogger(__name__)
 _MEMORY_SAFETY_FACTOR = 3.4
 
 

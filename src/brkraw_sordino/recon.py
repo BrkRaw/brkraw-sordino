@@ -11,7 +11,7 @@ import logging
 from .helper import progressbar
 from .typing import Options
 
-logger = logging.getLogger("brkraw.sordino")
+logger = logging.getLogger(__name__)
 
 
 def _hash_cache_params(params: Dict[str, Any], *, salt: str) -> str:
@@ -209,8 +209,7 @@ def recon_dataobj(fid_fobj,
     logger.debug(" - Reconstruction traj shape: %s", trimmed_traj.shape)
     
     dtype = None
-    offreso_ch = getattr(options, "offreso_ch", None)
-    offreso_freq = float(getattr(options, "offreso_freq", 0.0) or 0.0)
+    offreso_freqs = getattr(options, "offreso_freqs", None)
     eff_bandwidth = recon_info.get("EffBandwidth_Hz")
     over_sampling = recon_info.get("OverSampling")
 
@@ -229,7 +228,7 @@ def recon_dataobj(fid_fobj,
                 rss_gb,
             )
         n_receivers = fid_shape[2]
-        
+
         if n_receivers > 1:
             if n == 0:
                 logger.debug(" - Multi-channel reconstruction")
@@ -238,17 +237,19 @@ def recon_dataobj(fid_fobj,
                 if n == 0:
                     logger.debug(" - Channel: %s", ch_id)
                 _k_space = k_space[:, ch_id, :]
-                apply_offreso = offreso_ch is None or ch_id == int(offreso_ch) - 1
+                apply_offreso = offreso_freqs is not None and len(offreso_freqs) > ch_id
+                
                 if (
                     apply_offreso
-                    and offreso_freq
+                    and isinstance(offreso_freqs, tuple)
                     and eff_bandwidth is not None
                     and over_sampling is not None
                 ):
+                    offreso_freq = offreso_freqs[ch_id]
                     if n == 0:
                         logger.info(
                             " - Correcting off-resonance: ch=%s, freq=%.6f Hz",
-                            (offreso_ch if offreso_ch is not None else "all"),
+                            ch_id,
                             offreso_freq,
                         )
                     _k_space = correct_offreso(
@@ -263,17 +264,16 @@ def recon_dataobj(fid_fobj,
         else:
             if n == 0:
                 logger.debug(" - Single-channel reconstruction")
-            apply_offreso = offreso_ch is None or int(offreso_ch) == 1
             if (
-                apply_offreso
-                and offreso_freq
+                isinstance(offreso_freqs, tuple)
+                and len(offreso_freqs) > 0
                 and eff_bandwidth is not None
                 and over_sampling is not None
             ):
+                offreso_freq = offreso_freqs[0]
                 if n == 0:
                     logger.info(
-                        " - Correcting off-resonance: ch=%s, freq=%.6f Hz",
-                        (offreso_ch if offreso_ch is not None else "all"),
+                        " - Correcting off-resonance: freq=%.6f Hz",
                         offreso_freq,
                     )
                 k_space = correct_offreso(
