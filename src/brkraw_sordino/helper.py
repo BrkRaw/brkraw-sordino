@@ -4,7 +4,7 @@ import sys
 import time
 from typing import Any, Optional, TextIO, cast
 
-logger = logging.getLogger("brkraw.sordino")
+logger = logging.getLogger(__name__)
 
 
 def progressbar(iterable: Any, *, desc: str = "", ncols: int = 100, disable: Optional[bool] = None):

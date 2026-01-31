@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 from pathlib import Path
 
 
@@ -11,8 +11,7 @@ class Options:
     num_frames: Optional[int]
     correct_spoketiming: bool
     correct_ramptime: bool
-    offreso_ch: Optional[int]
-    offreso_freq: float
+    offreso_freqs: Tuple[Optional[Union[float, int]], ...]
     mem_limit: float
     clear_cache: bool
     split_ch: bool

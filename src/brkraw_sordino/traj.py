@@ -6,7 +6,7 @@ import logging
 from .helper import progressbar
 from .typing import Options
 
-logger = logging.getLogger("brkraw.sordino")
+logger = logging.getLogger(__name__)
 
 
 def radial_angles(n: int, factor: float) -> int:

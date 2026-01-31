@@ -35,10 +35,9 @@ from .spoketiming import (
 )
 from .orientation import correct as correct_orientation
 
-
 FileIO = Union[DatasetFile, ZippedFile]
-logger = logging.getLogger("brkraw.sordino")
-
+logger = logging.getLogger(__name__)
+config_core.configure_logging()
 
 def _normalize_ext_factors(value: Any) -> Tuple[float, float, float]:
     if value is None:
@@ -75,8 +74,7 @@ def _build_options(kwargs: Dict[str, Any]) -> Options:
         "num_frames",
         "correct_spoketiming",
         "correct_ramptime",
-        "offreso_ch",
-        "offreso_freq",
+        "offreso_freqs",
         "mem_limit",
         "clear_cache",
         "split_ch",
@@ -87,6 +85,9 @@ def _build_options(kwargs: Dict[str, Any]) -> Options:
         logger.debug("Sordino hook unknown kwargs: %s", unknown_keys)
     cache_dir = _get_cache_dir(kwargs.get("cache_dir"))
     logger.debug("Cache dir: %s", cache_dir)
+    offreso_freqs = kwargs.get("offreso_freqs")
+    if isinstance(offreso_freqs, (int, float)):
+        offreso_freqs = (offreso_freqs, )
 
     return Options(
         ext_factors=_normalize_ext_factors(kwargs.get("ext_factors")),
@@ -95,8 +96,7 @@ def _build_options(kwargs: Dict[str, Any]) -> Options:
         num_frames=kwargs.get("num_frames"),
         correct_spoketiming=bool(kwargs.get("correct_spoketiming", False)),
         correct_ramptime=bool(kwargs.get("correct_ramptime", True)),
-        offreso_ch=kwargs.get("offreso_ch"),
-        offreso_freq=float(kwargs.get("offreso_freq", 0.0)),
+        offreso_freqs=tuple(offreso_freqs) if offreso_freqs else (),
         mem_limit=float(kwargs.get("mem_limit", 0.5)),
         clear_cache=bool(kwargs.get("clear_cache", True)),
         split_ch=bool(kwargs.get("split_ch", False)),
